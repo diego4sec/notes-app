@@ -3,7 +3,7 @@
 REGISTRY = localhost:5001
 IMAGES = notes-api notes-web keycloak-notes
 
-.PHONY: compose test verify images registry deploy undeploy
+.PHONY: compose test verify images registry ingress deploy undeploy
 
 compose:            ## phase 1: db + keycloak + api, SPA runs via `cd web && npm run dev`
 	docker compose up -d --build
@@ -19,6 +19,14 @@ images:
 	docker build -t notes-api:dev ./api
 	docker build -t notes-web:dev ./web
 	docker build -t keycloak-notes:dev ../keycloak-notes
+
+# HTTP on 90, not 80: another app's LoadBalancer Service holds 80 on this
+# cluster, and two LoadBalancers cannot share a host port.
+ingress:
+	helm upgrade --install ingress-nginx ingress-nginx \
+		--repo https://kubernetes.github.io/ingress-nginx \
+		--namespace ingress-nginx --create-namespace \
+		--set controller.service.ports.http=90 --wait
 
 registry: images
 	docker start notes-registry 2>/dev/null || \

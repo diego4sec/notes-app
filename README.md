@@ -44,9 +44,14 @@ nothing gets baked into a web image.
 
 Enable Kubernetes in Docker Desktop, then once:
 
-    helm upgrade --install ingress-nginx ingress-nginx \
-      --repo https://kubernetes.github.io/ingress-nginx \
-      --namespace ingress-nginx --create-namespace
+    make ingress
+
+That installs ingress-nginx with its HTTP port on **90**, not 80. Two
+LoadBalancer Services cannot share a host port, and port 80 on this cluster
+belongs to another app. A LoadBalancer asking for a taken port never gets an
+address: it sits at `<pending>` and nothing answers, with no error to explain
+it. If port 80 is free where you are, use `--set controller.service.ports.http=80`
+and set `port: ""` in `values-local.yaml`.
 
 Then:
 
@@ -58,25 +63,28 @@ Docker Desktop runs Kubernetes on containerd, which cannot see images in the
 Docker daemon's own store, so a locally built image with `pullPolicy: Never`
 fails with `ErrImageNeverPull`.
 
-Open http://notes.localhost. It resolves to 127.0.0.1 with no `/etc/hosts`
-edit, and browsers treat `*.localhost` as a trustworthy origin.
+Open **http://notes.localhost:90**. It resolves to 127.0.0.1 with no
+`/etc/hosts` edit, and browsers treat `*.localhost` as a trustworthy origin.
 
-**If nothing answers on port 80,** check whether the ingress Service ever got
-an address:
+The port has to appear in `values-local.yaml` as `port: 90`, not just in the
+URL: it flows into `KC_HOSTNAME` and therefore into the token issuer, and it is
+matched exactly in the client's redirect URIs.
+
+**If nothing answers,** check that the ingress Service actually got an
+address:
 
     kubectl -n ingress-nginx get svc ingress-nginx-controller
 
-`<pending>` means another LoadBalancer Service on the cluster already holds
-port 80. Reach the ingress through a port-forward instead, and tell the chart
-the port so the token issuer matches the URL bar:
+`<pending>` means the port it asked for is already taken on the host. Either
+move the controller to a free port and set `port` to match, or reach it through
+a port-forward:
 
-    kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8081:80
+    kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8081:90
     helm upgrade --install notes ./deploy/chart -f deploy/chart/values-local.yaml \
       --set port=8081 --namespace notes
 
-Then http://notes.localhost:8081. The realm already lists that redirect URI;
-any other port has to be added, because Keycloak matches redirect URIs
-including the port.
+The realm lists `:90` and `:8081`. Any other port must be added to the
+client's redirect URIs, because Keycloak matches them including the port.
 
 A fresh cluster has no users. The compose seed does not apply here:
 
@@ -197,8 +205,8 @@ structurally cannot see, and each of these actually bit during development:
 
 It also works against the cluster:
 
-    KC_BASE=http://notes.localhost/auth/realms/notes \
-    API_BASE=http://notes.localhost REDIRECT=http://notes.localhost/ \
+    KC_BASE=http://notes.localhost:90/auth/realms/notes \
+    API_BASE=http://notes.localhost:90 REDIRECT=http://notes.localhost:90/ \
     KC_USER=you KC_PASSWORD=... make verify
 
 ## Not built
