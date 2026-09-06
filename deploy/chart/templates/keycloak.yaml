@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-keycloak
+  labels: {{- include "notes.labels" . | nindent 4 }}
+spec:
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: keycloak
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-keycloak
+  labels: {{- include "notes.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.keycloak.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: keycloak
+  template:
+    metadata:
+      labels:
+        {{- include "notes.labels" . | nindent 8 }}
+        app.kubernetes.io/component: keycloak
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: keycloak
+          image: {{ .Values.keycloak.image }}
+          imagePullPolicy: {{ .Values.keycloak.pullPolicy }}
+          # --optimized, because kc.sh build already ran at image build time.
+          # start-dev is never used here.
+          args:
+            - start
+            - --optimized
+            {{- if .Values.keycloak.importRealm }}
+            - --import-realm
+            {{- end }}
+          env:
+            - { name: KC_DB, value: postgres }
+            - { name: KC_DB_URL_HOST, value: {{ include "notes.dbHost" . | quote }} }
+            - { name: KC_DB_URL_PORT, value: {{ .Values.postgres.port | quote }} }
+            - { name: KC_DB_URL_DATABASE, value: {{ .Values.postgres.keycloakDatabase | quote }} }
+            - { name: KC_DB_USERNAME, value: {{ .Values.postgres.user | quote }} }
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "notes.secretName" . }}
+                  key: db-password
+
+            # Pin the public URL so the issuer in every token matches what the
+            # browser used. Without this, tokens are issued with the pod's own
+            # address and the API rejects them.
+            # Includes the /auth path: KC_HOSTNAME sets the entire public base
+            # URL, and dropping the path makes Keycloak advertise an issuer
+            # that does not match where it actually serves.
+            - { name: KC_HOSTNAME, value: "{{ include "notes.publicUrl" . }}/auth" }
+            # TLS terminates at the ingress, so the pod speaks plain HTTP but
+            # must trust the forwarded scheme to build correct redirect URLs.
+            - { name: KC_HTTP_ENABLED, value: "true" }
+            - { name: KC_PROXY_HEADERS, value: xforwarded }
+
+            # Discovery over the database, so clustering needs no pod-listing
+            # RBAC and no multicast, neither of which k8s gives you.
+            - { name: KC_CACHE, value: ispn }
+            - { name: KC_CACHE_STACK, value: jdbc-ping }
+
+            - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: {{ .Values.keycloak.adminUsername | quote }} }
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "notes.secretName" . }}
+                  key: keycloak-admin-password
+          ports:
+            - { name: http, containerPort: 8080 }
+            # Health and metrics live on the management port, and are not
+            # behind KC_HTTP_RELATIVE_PATH.
+            - { name: management, containerPort: 9000 }
+          readinessProbe:
+            httpGet: { path: /health/ready, port: management }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /health/live, port: management }
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources: {{- toYaml .Values.keycloak.resources | nindent 12 }}

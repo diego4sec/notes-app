@@ -1,0 +1,59 @@
+# Vanilla Kubernetes in the cloud.
+#
+# Differences from local, all of them deliberate:
+#   - real DNS name and TLS via cert-manager
+#   - managed Postgres, nothing stateful in the cluster
+#   - secrets come from a store, never from this file
+#   - realm import off, so production has no untracked realm
+#   - two replicas of the stateless tiers, with limits
+
+host: notes.example.com
+
+tls:
+  enabled: true
+  secretName: notes-tls
+  clusterIssuer: letsencrypt-prod
+
+ingress:
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 2m
+
+postgres:
+  enabled: false
+  host: notes-db.abc123.eu-west-1.rds.amazonaws.com
+  port: 5432
+  user: notes
+  notesDatabase: notes
+  keycloakDatabase: keycloak
+
+secret:
+  # Bring your own, populated by External Secrets / SOPS / sealed-secrets, with
+  # keys: db-password, keycloak-admin-password
+  create: false
+  name: notes-secrets
+
+api:
+  image: ghcr.io/OWNER/notes-api:0.1.0
+  pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: 500m, memory: 512Mi }
+
+web:
+  image: ghcr.io/OWNER/notes-web:0.1.0
+  pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 100m, memory: 64Mi }
+
+keycloak:
+  image: ghcr.io/OWNER/keycloak-notes:0.1.0
+  pullPolicy: IfNotPresent
+  replicas: 2
+  importRealm: false
+  resources:
+    requests: { cpu: 300m, memory: 1Gi }
+    limits: { cpu: "1", memory: 1.5Gi }

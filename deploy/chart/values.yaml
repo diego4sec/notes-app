@@ -1,0 +1,72 @@
+# Shared defaults. Pick an environment file on top:
+#   helm upgrade --install notes ./deploy/chart -f deploy/chart/values-local.yaml
+#   helm upgrade --install notes ./deploy/chart -f deploy/chart/values-cloud.yaml
+
+# One host serves web, api and keycloak. That is what keeps the token issuer
+# identical for the browser and the API, and removes CORS entirely.
+#
+# *.localhost, not *.localtest.me, and that is load-bearing: Keycloak sets its
+# auth cookies Secure, and browsers only accept Secure cookies on a trustworthy
+# origin. http://*.localhost qualifies, http://*.localtest.me does not, so the
+# latter gives you a silent login loop with TLS off.
+host: notes.localhost
+
+ingress:
+  className: nginx
+  annotations: {}
+
+tls:
+  enabled: false
+  secretName: notes-tls
+  # cert-manager ClusterIssuer. Empty means bring your own secret.
+  clusterIssuer: ""
+
+realm: notes
+
+api:
+  image: notes-api:dev
+  pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests: { cpu: 50m, memory: 192Mi }
+
+web:
+  image: notes-web:dev
+  pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+
+keycloak:
+  image: keycloak-notes:dev
+  pullPolicy: IfNotPresent
+  replicas: 1
+  # --import-realm only applies when the realm does not exist, so leaving this
+  # on in a real environment gives you a realm nothing tracks. See README.
+  importRealm: true
+  adminUsername: admin
+  resources:
+    requests: { cpu: 200m, memory: 768Mi }
+
+postgres:
+  # true: in-cluster StatefulSet, fine for Docker Desktop.
+  # false: managed database, set host below.
+  enabled: true
+  image: postgres:16-alpine
+  host: ""
+  port: 5432
+  user: notes
+  notesDatabase: notes
+  keycloakDatabase: keycloak
+  storage: 5Gi
+  storageClass: ""
+  resources:
+    requests: { cpu: 50m, memory: 192Mi }
+
+secret:
+  # false: create the secret yourself (External Secrets, SOPS, sealed-secrets)
+  # with keys `db-password` and `keycloak-admin-password`.
+  create: true
+  name: ""
+  dbPassword: ""
+  keycloakAdminPassword: ""

@@ -1,0 +1,42 @@
+# Kubernetes on Docker Desktop.
+#
+# notes.localhost resolves to 127.0.0.1 with no /etc/hosts edit, and browsers
+# treat *.localhost as a trustworthy origin, which is what lets Keycloak's
+# Secure auth cookies work without TLS. Do not swap in a localtest.me-style
+# domain here: the cookies get dropped and login loops with no error.
+#
+# Prerequisite:
+#   helm upgrade --install ingress-nginx ingress-nginx \
+#     --repo https://kubernetes.github.io/ingress-nginx \
+#     --namespace ingress-nginx --create-namespace
+
+host: notes.localhost
+
+tls:
+  enabled: false
+
+postgres:
+  enabled: true
+  storage: 2Gi
+
+secret:
+  create: true
+  # Local-only throwaway values. In cloud these come from a real secret store.
+  dbPassword: devpassword
+  keycloakAdminPassword: devadmin
+
+api:
+  image: notes-api:dev
+  # Images are built straight into the Docker Desktop daemon, so never try to
+  # pull them.
+  pullPolicy: Never
+
+web:
+  image: notes-web:dev
+  pullPolicy: Never
+
+keycloak:
+  image: keycloak-notes:dev
+  pullPolicy: Never
+  importRealm: true
+  replicas: 1

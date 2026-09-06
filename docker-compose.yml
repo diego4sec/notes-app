@@ -1,0 +1,96 @@
+# Phase 1: prove the auth flow before any Kubernetes is involved.
+#
+#   docker compose up -d --build
+#   cd web && npm install && npm run dev     # SPA on http://localhost:5173
+#
+# The SPA runs on the host rather than in compose, so the Vite dev server can
+# hot-reload and so no environment gets baked into a web image.
+#
+# Every credential here is a local dev value. Nothing in this file goes near a
+# real environment; k8s reads them from a Secret.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: notes
+      POSTGRES_PASSWORD: notes
+      POSTGRES_DB: notes
+    ports: ["5432:5432"]
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+      - ./deploy/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notes"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  keycloak:
+    # Sibling checkout of the keycloak-notes repo. In a real environment this is
+    # `image: ghcr.io/<owner>/keycloak-notes:<tag>` and nothing is built here.
+    build: ../keycloak-notes
+    image: keycloak-notes:dev
+    command: ["start", "--optimized", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: db
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: notes
+      KC_DB_PASSWORD: notes
+      # Fixes the issuer to exactly what the browser uses. The API validates
+      # against this string while fetching keys over the internal network.
+      # The path matters: KC_HOSTNAME sets the whole public base URL, and
+      # without /auth here Keycloak serves at /auth but advertises an issuer
+      # without it, so every token gets rejected.
+      KC_HOSTNAME: http://localhost:8080/auth
+      KC_HTTP_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports: ["8080:8080"]
+    depends_on:
+      db: { condition: service_healthy }
+
+  # One-shot dev user. The image ships no users on purpose, so a known password
+  # never ends up in an image layer. Idempotent, safe to re-run.
+  kc-seed:
+    image: keycloak-notes:dev
+    depends_on: [keycloak]
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        KC=/opt/keycloak/bin/kcadm.sh
+        CFG=/tmp/kcadm.json
+        until $$KC config credentials --config $$CFG \
+              --server http://keycloak:8080/auth --realm master \
+              --user admin --password admin 2>/dev/null; do
+          echo "waiting for keycloak..."; sleep 3
+        done
+        if $$KC get users --config $$CFG -r notes -q username=dev | grep -q '"id"'; then
+          echo "dev user already exists"
+        else
+          $$KC create users --config $$CFG -r notes \
+            -s username=dev -s email=dev@example.com -s emailVerified=true \
+            -s enabled=true -s firstName=Dev -s lastName=User
+          $$KC set-password --config $$CFG -r notes --username dev --new-password dev
+          echo "created dev / dev"
+        fi
+
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgresql+psycopg://notes:notes@db:5432/notes
+      # Public issuer as the browser sees it.
+      OIDC_ISSUER: http://localhost:8080/auth/realms/notes
+      # Internal address for key fetching. Splitting these two is what prevents
+      # the classic issuer-mismatch 401.
+      OIDC_JWKS_URL: http://keycloak:8080/auth/realms/notes/protocol/openid-connect/certs
+      OIDC_AUDIENCE: notes-api
+      # No CORS: Vite proxies /api, so the browser only ever sees one origin.
+    ports: ["8000:8000"]
+    depends_on:
+      db: { condition: service_healthy }
+
+volumes:
+  dbdata:

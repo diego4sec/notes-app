@@ -1,0 +1,24 @@
+notes is deployed at {{ include "notes.publicUrl" . }}
+
+  app       {{ include "notes.publicUrl" . }}/
+  api docs  {{ include "notes.publicUrl" . }}/api/docs
+  keycloak  {{ include "notes.publicUrl" . }}/auth/admin/
+
+Token issuer: {{ include "notes.issuer" . }}
+{{ if not .Values.tls.enabled }}
+TLS is off. Fine on Docker Desktop, not fine anywhere else.
+{{- end }}
+{{- if .Values.postgres.enabled }}
+Postgres runs in-cluster with no backups. Set postgres.enabled=false and point
+at a managed instance for anything real.
+{{- end }}
+{{- if and .Values.keycloak.importRealm (not .Values.postgres.enabled) }}
+WARNING: keycloak.importRealm is on against an external database. Realm import
+only runs when the realm is absent, so this will silently do nothing on the
+next deploy and leave you with a realm nothing tracks.
+{{- end }}
+
+There are no users yet. Create one:
+  kubectl exec -it deploy/{{ .Release.Name }}-keycloak -- /opt/keycloak/bin/kcadm.sh \
+    config credentials --server http://localhost:8080/auth --realm master \
+    --user {{ .Values.keycloak.adminUsername }} --password "$KEYCLOAK_ADMIN_PASSWORD"

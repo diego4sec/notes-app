@@ -1,0 +1,8 @@
+apiVersion: v2
+name: notes
+description: Note manager with Keycloak authentication
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# No subcharts on purpose. The only dependency would be a Postgres chart, and a
+# 40-line StatefulSet we can read beats a chart with 300 values we cannot.
