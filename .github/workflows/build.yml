@@ -47,11 +47,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: azure/setup-helm@v4
       - name: Lint and render both environments
+        # The chart requires both passwords and refuses to render without them,
+        # so CI supplies throwaway ones. Nothing here reaches a cluster.
         run: |
-          helm lint deploy/chart -f deploy/chart/values-local.yaml
+          helm lint deploy/chart -f deploy/chart/values-local.yaml \
+            --set secret.dbPassword=ci-only --set secret.keycloakAdminPassword=ci-only
           helm lint deploy/chart -f deploy/chart/values-cloud.yaml
-          helm template notes deploy/chart -f deploy/chart/values-local.yaml > /tmp/local.yaml
+          helm template notes deploy/chart -f deploy/chart/values-local.yaml \
+            --set secret.dbPassword=ci-only --set secret.keycloakAdminPassword=ci-only > /tmp/local.yaml
           helm template notes deploy/chart -f deploy/chart/values-cloud.yaml > /tmp/cloud.yaml
+
+      # A note in values.yaml is worth nothing if the chart ignores it.
+      - name: Empty passwords are actually rejected
+        run: |
+          if helm template notes deploy/chart -f deploy/chart/values-local.yaml >/dev/null 2>&1; then
+            echo "::error::the chart rendered with empty passwords; the requirement is not enforced"
+            exit 1
+          fi
+          helm template notes deploy/chart -f deploy/chart/values-local.yaml 2>&1 \
+            | grep -q 'secret.dbPassword is empty' \
+            || { echo "::error::rejected, but not with the expected message"; exit 1; }
+          echo "empty passwords rejected as designed"
 
       # The issuer the API validates has to equal the one Keycloak advertises,
       # byte for byte, port and /auth path included. A mismatch here is a 401 on
@@ -73,18 +89,30 @@ jobs:
               print(f"{env}: {issuer}")
           PY
 
-      - name: Cloud values keep secrets out of git
+      - name: No credentials in any committed values file
         run: |
-          python3 - <<'PY'
-          import re, sys
-          text = open("deploy/chart/values-cloud.yaml").read()
-          if re.search(r'^\s*create:\s*true', text, re.M):
-              sys.exit("::error::values-cloud.yaml must not create secrets from literals")
-          for field in ("dbPassword", "keycloakAdminPassword"):
-              if re.search(rf'^\s*{field}:\s*\S', text, re.M):
-                  sys.exit(f"::error::values-cloud.yaml carries a literal {field}")
-          print("cloud values reference an external secret")
-          PY
+          python3 - <<'PYEOF'
+          import glob, re, sys
+
+          # These repos are public. A password here is a published password, and
+          # the chart generates one on first install instead, so there is never
+          # a reason to commit a literal.
+          for path in sorted(glob.glob("deploy/chart/values*.yaml")):
+              text = open(path).read()
+              for field in ("dbPassword", "keycloakAdminPassword"):
+                  match = re.search(rf'^\s*{field}:\s*(?!""|\'\'|$)(\S+)', text, re.M)
+                  if match:
+                      sys.exit(f"::error file={path}::{field} has a literal value. "
+                               "Leave it empty and let the chart generate it.")
+              print(f"{path}: clean")
+
+          # Cloud must not create secrets at all: the operator owns them, in a
+          # real secret store, so rotation is theirs and not the chart's.
+          cloud = open("deploy/chart/values-cloud.yaml").read()
+          if re.search(r'^\s*create:\s*true', cloud, re.M):
+              sys.exit("::error::values-cloud.yaml must set secret.create=false")
+          print("cloud references an external secret")
+          PYEOF
 
   images:
     needs: [test, chart]

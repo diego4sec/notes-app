@@ -29,6 +29,7 @@ most common failure in this setup, and it removes CORS entirely.
 | `make images` | Builds the three images into the local Docker daemon. |
 | `make registry` | Pushes those images to a throwaway registry on `localhost:5001`. |
 | `make ingress` | Installs ingress-nginx with HTTP on port 90. |
+| `make secrets` | Writes `deploy/chart/secrets.local.yaml` (gitignored). Run by `deploy`. |
 | `make deploy` | `registry` plus `helm upgrade --install` with `values-local.yaml`. |
 | `make undeploy` | `helm uninstall`. Leaves the namespace and the PVC. |
 | `make deploy-ghcr` | Deploys the CI-published GHCR images instead of local builds. |
@@ -113,6 +114,39 @@ silently loops with no error anywhere. The alternative is to run TLS locally.
 There are no users in a fresh cluster. Create one in the admin console at
 http://notes.localhost/auth/admin/ or with `kcadm.sh` (see `helm status`).
 
+## Passwords
+
+`secret.dbPassword` and `secret.keycloakAdminPassword` are **required** when
+`secret.create` is true. Empty is rejected: the chart refuses to render rather
+than substituting a value you did not choose.
+
+They are deliberately empty in every committed values file, because this repo
+is public and a password written there is a published password. Supply them
+from outside the repo:
+
+    make secrets      # writes deploy/chart/secrets.local.yaml, gitignored
+
+`make deploy` depends on that target and passes the file with `-f`, so the
+normal path needs no arguments. On first run it generates two 32-character
+passwords; if a `notes-secrets` already exists in the cluster it seeds from
+that instead, because a mismatch would be worse than a weak password: Postgres
+only applies `POSTGRES_PASSWORD` at initdb, so a changed password leaves the
+API unable to reach a database still expecting the old one.
+
+For anything real, set `secret.create=false` and bring the secret from a secret
+store, so rotation belongs to the operator rather than to the chart.
+
+To read back what the cluster is using:
+
+    kubectl -n notes get secret notes-secrets \
+      -o jsonpath='{.data.keycloak-admin-password}' | base64 -d
+
+Rotating the database password needs two steps, not one:
+
+    kubectl -n notes exec statefulset/notes-postgres -- \
+      psql -U notes -c "ALTER USER notes PASSWORD 'new-password'"
+    # then update secrets.local.yaml and re-run make deploy
+
 ## Images and CI
 
 Both repos publish to GHCR on every push to `main` and every `v*` tag. No
@@ -156,8 +190,10 @@ because the mistakes they catch are invisible until runtime:
 
 - `OIDC_ISSUER` must equal `KC_HOSTNAME` + `/realms/notes` exactly, and
   `KC_HOSTNAME` must keep its `/auth` path. A mismatch is a 401 on every call.
-- `values-cloud.yaml` must not create secrets from literals, so a real password
-  cannot be committed by accident.
+- no committed `values*.yaml` may carry a literal password, and
+  `values-cloud.yaml` must not create secrets at all.
+- the chart must actually reject empty passwords, so the requirement documented
+  in `values.yaml` cannot quietly stop being enforced.
 
 `keycloak-notes` validates the realm file, then **starts the image for real**
 against Postgres with `start --optimized` and asserts what the import actually

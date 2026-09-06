@@ -82,9 +82,29 @@ postgres:
     requests: { cpu: 50m, memory: 192Mi }
 
 secret:
-  # false: create the secret yourself (External Secrets, SOPS, sealed-secrets)
-  # with keys `db-password` and `keycloak-admin-password`.
+  # true: the chart creates the secret from the two passwords below.
+  # false: you supply the secret yourself (External Secrets, SOPS,
+  #   sealed-secrets) with keys `db-password` and `keycloak-admin-password`.
+  #   This is the right answer for anything real, so the operator owns rotation.
   create: true
   name: ""
+
+  # REQUIRED when create is true. Both must be non-empty: the chart refuses to
+  # render otherwise, rather than substituting something you did not choose.
+  #
+  # Do NOT fill them in here. This file is committed, and this repo is public,
+  # so a value written here is a published password. Supply them from outside
+  # the repo instead, in order of preference:
+  #
+  #   1. make secrets      writes deploy/chart/secrets.local.yaml (gitignored)
+  #                        with random values, which `make deploy` passes via -f
+  #   2. --set secret.dbPassword=...      for one-off runs
+  #   3. secret.create=false              for anything real: the secret comes
+  #                                       from a secret store and rotation is
+  #                                       the operator's, not the chart's
+  #
+  # Changing dbPassword after the first install does not change the database.
+  # Postgres only applies POSTGRES_PASSWORD at initdb, so a rotation needs an
+  # ALTER USER as well, or the API cannot connect.
   dbPassword: ""
   keycloakAdminPassword: ""

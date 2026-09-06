@@ -14,7 +14,10 @@ LAST_NAME ?= User
 KCADM = /opt/keycloak/bin/kcadm.sh
 KCCFG = --config /tmp/kcadm.json
 
-.PHONY: compose test verify images registry ingress deploy deploy-ghcr undeploy user compose-user
+# Gitignored, so a password never reaches a commit. Regenerate by deleting it.
+SECRETS = deploy/chart/secrets.local.yaml
+
+.PHONY: compose test verify images registry ingress secrets deploy deploy-ghcr undeploy user compose-user
 
 compose:            ## phase 1: db + keycloak + api, SPA runs via `cd web && npm run dev`
 	docker compose up -d --build
@@ -46,16 +49,34 @@ registry: images
 		docker tag $$i:dev $(REGISTRY)/$$i:dev && docker push -q $(REGISTRY)/$$i:dev; \
 	done
 
-deploy: registry
+# The chart requires both passwords and refuses to render without them. This
+# writes random ones once; re-running keeps what is already there, because
+# Postgres only applies its password at initdb.
+secrets:
+	@if [ -f $(SECRETS) ]; then \
+		echo "$(SECRETS) already exists, keeping it"; \
+	elif kubectl -n notes get secret notes-secrets >/dev/null 2>&1; then \
+		printf 'secret:\n  dbPassword: "%s"\n  keycloakAdminPassword: "%s"\n' \
+			"$$(kubectl -n notes get secret notes-secrets -o jsonpath='{.data.db-password}' | base64 -d)" \
+			"$$(kubectl -n notes get secret notes-secrets -o jsonpath='{.data.keycloak-admin-password}' | base64 -d)" > $(SECRETS); \
+		echo "seeded $(SECRETS) from the deployed secret"; \
+	else \
+		printf 'secret:\n  dbPassword: "%s"\n  keycloakAdminPassword: "%s"\n' \
+			"$$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)" \
+			"$$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)" > $(SECRETS); \
+		echo "wrote $(SECRETS) with new random passwords (gitignored)"; \
+	fi
+
+deploy: registry secrets
 	helm upgrade --install notes ./deploy/chart \
-		-f deploy/chart/values-local.yaml \
+		-f deploy/chart/values-local.yaml -f $(SECRETS) \
 		--namespace notes --create-namespace --wait --timeout 8m
 
 # Deploy the images CI published, rather than local builds. Add
 # --set imagePullSecrets[0].name=ghcr if the GHCR packages are private.
-deploy-ghcr:
+deploy-ghcr: secrets
 	helm upgrade --install notes ./deploy/chart \
-		-f deploy/chart/values-local.yaml \
+		-f deploy/chart/values-local.yaml -f $(SECRETS) \
 		--set api.image=ghcr.io/diego4sec/notes-api:$(TAG) \
 		--set web.image=ghcr.io/diego4sec/notes-web:$(TAG) \
 		--set keycloak.image=ghcr.io/diego4sec/keycloak-notes:$(TAG) \

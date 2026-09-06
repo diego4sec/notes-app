@@ -31,10 +31,18 @@ postgres:
   storage: 2Gi
 
 secret:
+  # Deliberately still empty here, and the chart will refuse to render until
+  # something supplies them. `make secrets` writes random values to
+  # deploy/chart/secrets.local.yaml, which is gitignored, and `make deploy`
+  # passes it with -f.
+  #
+  # Read back what is in the cluster with:
+  #
+  #   kubectl -n notes get secret notes-secrets \
+  #     -o jsonpath='{.data.keycloak-admin-password}' | base64 -d
   create: true
-  # Local-only throwaway values. In cloud these come from a real secret store.
-  dbPassword: devpassword
-  keycloakAdminPassword: devadmin
+  dbPassword: ""
+  keycloakAdminPassword: ""
 
 # Local overrides the GHCR defaults in values.yaml with a throwaway registry on
 # the host, so the inner loop does not depend on CI or on the network.
