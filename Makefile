@@ -3,7 +3,16 @@
 REGISTRY = localhost:5001
 IMAGES = notes-api notes-web keycloak-notes
 
-.PHONY: compose test verify images registry ingress deploy undeploy
+KC_ADMIN_PASSWORD ?= devadmin
+# Keycloak's default Verify Profile policy requires both names. A user missing
+# them is stopped at a profile form on first login, which also blocks any
+# scripted sign-in.
+FIRST_NAME ?= $(USER_NAME)
+LAST_NAME ?= User
+KCADM = /opt/keycloak/bin/kcadm.sh
+KCCFG = --config /tmp/kcadm.json
+
+.PHONY: compose test verify images registry ingress deploy undeploy user compose-user
 
 compose:            ## phase 1: db + keycloak + api, SPA runs via `cd web && npm run dev`
 	docker compose up -d --build
@@ -42,3 +51,36 @@ deploy: registry
 
 undeploy:
 	helm uninstall notes --namespace notes
+
+# App users live in the `notes` realm of ONE Keycloak. The compose stack and the
+# cluster have separate databases, so a user created in one cannot log in to the
+# other. Password is prompted, not passed as an argument, so it stays out of
+# your shell history. USER_NAME rather than USER, because USER is already an
+# environment variable.
+user:
+	@test -n "$(USER_NAME)" || { echo "usage: make user USER_NAME=alice"; exit 1; }
+	@printf 'password for %s: ' "$(USER_NAME)"; read -rs P; echo; \
+	kubectl -n notes exec deploy/notes-keycloak -- $(KCADM) config credentials $(KCCFG) \
+		--server http://localhost:8080/auth --realm master \
+		--user admin --password '$(KC_ADMIN_PASSWORD)' && \
+	kubectl -n notes exec deploy/notes-keycloak -- $(KCADM) create users $(KCCFG) -r notes \
+		-s username='$(USER_NAME)' -s enabled=true -s emailVerified=true \
+		-s email='$(USER_NAME)@example.com' \
+		-s firstName='$(FIRST_NAME)' -s lastName='$(LAST_NAME)' && \
+	kubectl -n notes exec deploy/notes-keycloak -- $(KCADM) set-password $(KCCFG) -r notes \
+		--username '$(USER_NAME)' --new-password "$$P" && \
+	echo "created $(USER_NAME) in the cluster notes realm"
+
+compose-user:
+	@test -n "$(USER_NAME)" || { echo "usage: make compose-user USER_NAME=alice"; exit 1; }
+	@printf 'password for %s: ' "$(USER_NAME)"; read -rs P; echo; \
+	docker compose exec -T keycloak $(KCADM) config credentials $(KCCFG) \
+		--server http://localhost:8080/auth --realm master \
+		--user admin --password admin && \
+	docker compose exec -T keycloak $(KCADM) create users $(KCCFG) -r notes \
+		-s username='$(USER_NAME)' -s enabled=true -s emailVerified=true \
+		-s email='$(USER_NAME)@example.com' \
+		-s firstName='$(FIRST_NAME)' -s lastName='$(LAST_NAME)' && \
+	docker compose exec -T keycloak $(KCADM) set-password $(KCCFG) -r notes \
+		--username '$(USER_NAME)' --new-password "$$P" && \
+	echo "created $(USER_NAME) in the compose notes realm"

@@ -86,18 +86,7 @@ a port-forward:
 The realm lists `:90` and `:8081`. Any other port must be added to the
 client's redirect URIs, because Keycloak matches them including the port.
 
-A fresh cluster has no users. The compose seed does not apply here:
-
-    kubectl -n notes exec -it deploy/notes-keycloak -- /opt/keycloak/bin/kcadm.sh \
-      config credentials --server http://localhost:8080/auth --realm master \
-      --user admin --password devadmin
-    kubectl -n notes exec -it deploy/notes-keycloak -- /opt/keycloak/bin/kcadm.sh \
-      create users -r notes -s username=dev -s enabled=true -s email=dev@example.com
-    kubectl -n notes exec -it deploy/notes-keycloak -- /opt/keycloak/bin/kcadm.sh \
-      set-password -r notes --username dev --new-password dev
-
-The realm grants `notes-user` by default, so a user created this way can use
-the API immediately. Without that role the API returns 403.
+A fresh cluster has no users. See **Creating users** below.
 
 That last part is not cosmetic. Keycloak sets its auth cookies
 `Secure; SameSite=None`, and a browser only accepts `Secure` cookies from a
@@ -138,6 +127,46 @@ and a `notes-secrets` Secret holding `db-password` and
     deploy/chart/   one Helm chart, three values files
     scripts/        verify-auth-flow.py, the end-to-end auth check
     docker-compose.yml
+
+## Creating users
+
+    make user USER_NAME=alice            # cluster (the app on :90)
+    make compose-user USER_NAME=alice    # compose (the app on :5173)
+
+The password is prompted, not passed as an argument, so it stays out of your
+shell history.
+
+**There are two separate Keycloaks, each with its own database.** A user
+created in one cannot log in to the other, and the browser only says "Invalid
+username or password", which is a confusing way to learn this.
+
+| Stack | App URL | Admin console | Admin login |
+|---|---|---|---|
+| compose | http://localhost:5173 | http://localhost:8080/auth/admin/ | `admin` / `admin` |
+| kubernetes | http://notes.localhost:90 | http://notes.localhost:90/auth/admin/ | `admin` / `devadmin` |
+
+Doing it by hand in the admin console works too, with three things that are
+easy to get wrong:
+
+1. **Pick the `notes` realm, not `master`.** `master` administers Keycloak
+   itself; app users do not belong there.
+2. **Set first and last name.** Keycloak's default Verify Profile policy stops
+   a user with either missing at a profile form on first login, and blocks
+   scripted sign-in entirely.
+3. **Set a password on the Credentials tab,** with Temporary off unless you
+   want the reset prompt.
+
+The realm grants `notes-user` by default, so a new user can use the API
+straight away. Strip that role and the API returns 403 rather than 401, since
+the caller is authenticated but not entitled.
+
+When a login fails for no visible reason, this says exactly why:
+
+    kubectl -n notes logs deploy/notes-keycloak --tail=200 | grep LOGIN_ERROR
+
+`user_not_found` means wrong Keycloak or wrong realm. `invalid_user_credentials`
+means the password. A redirect to `required-action?execution=VERIFY_PROFILE`
+means a missing name.
 
 ## Data model
 
