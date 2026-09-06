@@ -19,6 +19,21 @@ That single-host layout is load-bearing, not cosmetic. It makes the token
 issuer identical for the browser and for the API, which is what removes the
 most common failure in this setup, and it removes CORS entirely.
 
+## Commands
+
+| Command | What it does |
+|---|---|
+| `make compose` | Phase 1: db, Keycloak, API, and a `dev` user. SPA runs separately. |
+| `make test` | pytest against Postgres. Needs only `docker compose up -d db`. |
+| `make verify` | Real PKCE login plus API calls. Needs a whole stack up. |
+| `make images` | Builds the three images into the local Docker daemon. |
+| `make registry` | Pushes those images to a throwaway registry on `localhost:5001`. |
+| `make ingress` | Installs ingress-nginx with HTTP on port 90. |
+| `make deploy` | `registry` plus `helm upgrade --install` with `values-local.yaml`. |
+| `make undeploy` | `helm uninstall`. Leaves the namespace and the PVC. |
+| `make user USER_NAME=x` | Creates an app user in the cluster realm. Prompts for the password. |
+| `make compose-user USER_NAME=x` | Same, in the compose realm. |
+
 ## Phase 1: local, no Kubernetes
 
 Clone both repos as siblings:
@@ -126,7 +141,9 @@ and a `notes-secrets` Secret holding `db-password` and
     web/            React, Vite, react-oidc-context
     deploy/chart/   one Helm chart, three values files
     scripts/        verify-auth-flow.py, the end-to-end auth check
+    deploy/initdb/  creates the keycloak database next to the notes one
     docker-compose.yml
+    Makefile        every command above
 
 ## Creating users
 
@@ -160,13 +177,7 @@ The realm grants `notes-user` by default, so a new user can use the API
 straight away. Strip that role and the API returns 403 rather than 401, since
 the caller is authenticated but not entitled.
 
-When a login fails for no visible reason, this says exactly why:
-
-    kubectl -n notes logs deploy/notes-keycloak --tail=200 | grep LOGIN_ERROR
-
-`user_not_found` means wrong Keycloak or wrong realm. `invalid_user_credentials`
-means the password. A redirect to `required-action?execution=VERIFY_PROFILE`
-means a missing name.
+When a login fails for no visible reason, see **Troubleshooting** below.
 
 ## Data model
 
@@ -238,7 +249,83 @@ It also works against the cluster:
     API_BASE=http://notes.localhost:90 REDIRECT=http://notes.localhost:90/ \
     KC_USER=you KC_PASSWORD=... make verify
 
+## Troubleshooting
+
+### A login fails and the browser just says invalid credentials
+
+Keycloak logs the real reason. This is the single most useful command here:
+
+    kubectl -n notes logs deploy/notes-keycloak --tail=200 | grep LOGIN_ERROR
+    docker compose logs keycloak | grep LOGIN_ERROR          # compose
+
+| In the log | Actually wrong |
+|---|---|
+| `error="user_not_found"` | Wrong Keycloak instance, or wrong realm. By far the most common. |
+| `error="invalid_user_credentials"` | The password. |
+| `error="cookie_not_found"` | The browser dropped Keycloak's `Secure` cookies, because the origin is not trustworthy. Use `localhost` / `*.localhost` over plain HTTP, or run TLS. |
+| redirect to `required-action?execution=VERIFY_PROFILE` | User has no first or last name. |
+| `error="invalid_redirect_uri"` | The URL's port is not in the client's redirect URIs. Keycloak matches them including the port. |
+
+### Am I locked out?
+
+Almost certainly not, and it is worth checking before assuming so:
+
+    kubectl -n notes exec deploy/notes-keycloak -- /opt/keycloak/bin/kcadm.sh \
+      get attack-detection/brute-force/users/<user-id> --config /tmp/kcadm.json -r notes
+
+The realm has `bruteForceProtected: true`, but `failureFactor` is 30 and
+`permanentLockout` is false, so a lockout takes 30 failures and then clears
+itself (60s increments, capped at 900s). Failures against a username that does
+not exist lock nothing at all, because the counter attaches to a user id and
+there is none.
+
+To clear every lockout in the realm without touching users:
+
+    kubectl -n notes exec deploy/notes-keycloak -- /opt/keycloak/bin/kcadm.sh \
+      delete attack-detection/brute-force/users --config /tmp/kcadm.json -r notes
+
+### Pods stuck on ErrImageNeverPull
+
+Docker Desktop runs Kubernetes on containerd, which cannot see the Docker
+daemon's image store. Run `make deploy`, which pushes through the local
+registry, rather than pointing the chart at a locally built tag.
+
+### Nothing answers on the app URL
+
+    kubectl -n ingress-nginx get svc ingress-nginx-controller
+
+`<pending>` in the EXTERNAL-IP column means the port it asked for is already
+taken on the host, usually by another LoadBalancer Service. Two of them cannot
+share a host port, and the loser waits forever with no error.
+
+### Every API call returns 401
+
+The token issuer does not match what the API validates. Compare them:
+
+    curl -s http://notes.localhost:90/auth/realms/notes/.well-known/openid-configuration \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin)["issuer"])'
+    kubectl -n notes exec deploy/notes-api -- printenv OIDC_ISSUER
+
+They must be byte-identical, port included. `KC_HOSTNAME` must carry the
+`/auth` path, and `port` in the values file must match the port in the URL bar.
+
+### Every API call returns 403
+
+Authenticated but not entitled: the user is missing the `notes-user` realm
+role. The realm grants it by default, so this means it was removed, or the user
+came from somewhere that does not grant it.
+
 ## Not built
 
 CI pipelines, note sharing, attachments, note history, rate limiting,
 observability. Each is a deliberate omission, not an oversight.
+
+## Known gaps
+
+The SPA's own JavaScript has never been exercised in a browser. It builds, the
+image serves it, and the OIDC flow it depends on is verified end to end by
+`make verify`, but nobody has confirmed the React app behaves once loaded.
+
+Realm changes are import-only, so editing `notes-realm.json` does not update a
+running realm. Locally, drop the Keycloak database. In cloud, `importRealm` is
+off and the realm is managed deliberately.
