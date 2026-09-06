@@ -11,6 +11,11 @@
 # latter gives you a silent login loop with TLS off.
 host: notes.localhost
 
+# Port the browser will use, when it is not the scheme default. Leave empty for
+# 80/443. Set it when reaching the ingress through a port-forward, because it
+# has to appear in the token issuer as well as in the URL bar.
+port: ""
+
 ingress:
   className: nginx
   annotations: {}

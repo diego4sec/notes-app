@@ -13,7 +13,7 @@ no `sub`, a default role that never got granted.
     KC_BASE=http://notes.localhost/auth/realms/notes \
     API_BASE=http://notes.localhost \
     REDIRECT=http://notes.localhost/ \
-    USERNAME=someone PASSWORD=... python3 scripts/verify-auth-flow.py
+    KC_USER=someone KC_PASSWORD=... python3 scripts/verify-auth-flow.py
 """
 import base64
 import hashlib
@@ -29,8 +29,8 @@ import urllib.request
 KC = os.environ.get("KC_BASE", "http://localhost:8080/auth/realms/notes")
 API = os.environ.get("API_BASE", "http://localhost:8000")
 REDIRECT = os.environ.get("REDIRECT", "http://localhost:5173/")
-USERNAME = os.environ.get("USERNAME", "dev")
-PASSWORD = os.environ.get("PASSWORD", "dev")
+USERNAME = os.environ.get("KC_USER", "dev")
+PASSWORD = os.environ.get("KC_PASSWORD", "dev")
 
 
 def b64(raw: bytes) -> str:

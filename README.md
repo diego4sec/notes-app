@@ -52,8 +52,44 @@ Then:
 
     make deploy
 
+`make deploy` builds the three images, pushes them to a throwaway registry on
+`localhost:5001`, and installs the chart. The registry is not optional:
+Docker Desktop runs Kubernetes on containerd, which cannot see images in the
+Docker daemon's own store, so a locally built image with `pullPolicy: Never`
+fails with `ErrImageNeverPull`.
+
 Open http://notes.localhost. It resolves to 127.0.0.1 with no `/etc/hosts`
 edit, and browsers treat `*.localhost` as a trustworthy origin.
+
+**If nothing answers on port 80,** check whether the ingress Service ever got
+an address:
+
+    kubectl -n ingress-nginx get svc ingress-nginx-controller
+
+`<pending>` means another LoadBalancer Service on the cluster already holds
+port 80. Reach the ingress through a port-forward instead, and tell the chart
+the port so the token issuer matches the URL bar:
+
+    kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8081:80
+    helm upgrade --install notes ./deploy/chart -f deploy/chart/values-local.yaml \
+      --set port=8081 --namespace notes
+
+Then http://notes.localhost:8081. The realm already lists that redirect URI;
+any other port has to be added, because Keycloak matches redirect URIs
+including the port.
+
+A fresh cluster has no users. The compose seed does not apply here:
+
+    kubectl -n notes exec -it deploy/notes-keycloak -- /opt/keycloak/bin/kcadm.sh \
+      config credentials --server http://localhost:8080/auth --realm master \
+      --user admin --password devadmin
+    kubectl -n notes exec -it deploy/notes-keycloak -- /opt/keycloak/bin/kcadm.sh \
+      create users -r notes -s username=dev -s enabled=true -s email=dev@example.com
+    kubectl -n notes exec -it deploy/notes-keycloak -- /opt/keycloak/bin/kcadm.sh \
+      set-password -r notes --username dev --new-password dev
+
+The realm grants `notes-user` by default, so a user created this way can use
+the API immediately. Without that role the API returns 403.
 
 That last part is not cosmetic. Keycloak sets its auth cookies
 `Secure; SameSite=None`, and a browser only accepts `Secure` cookies from a
@@ -163,7 +199,7 @@ It also works against the cluster:
 
     KC_BASE=http://notes.localhost/auth/realms/notes \
     API_BASE=http://notes.localhost REDIRECT=http://notes.localhost/ \
-    USERNAME=you PASSWORD=... make verify
+    KC_USER=you KC_PASSWORD=... make verify
 
 ## Not built
 

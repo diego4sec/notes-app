@@ -45,6 +45,8 @@ services:
       # without it, so every token gets rejected.
       KC_HOSTNAME: http://localhost:8080/auth
       KC_HTTP_ENABLED: "true"
+      # Single node, so skip the JGroups stack that would only find itself.
+      KC_CACHE: local
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
     ports: ["8080:8080"]

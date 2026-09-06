@@ -13,9 +13,11 @@ app.kubernetes.io/managed-by: Helm
 {{ if .Values.tls.enabled }}https{{ else }}http{{ end }}
 {{- end -}}
 
-{{/* The public base URL, as the browser sees it. */}}
+{{/* The public base URL, exactly as the browser sees it, port included. The
+port matters: it lands in KC_HOSTNAME and therefore in the token issuer, so a
+mismatch here is a 401 on every request. */}}
 {{- define "notes.publicUrl" -}}
-{{ include "notes.scheme" . }}://{{ .Values.host }}
+{{ include "notes.scheme" . }}://{{ .Values.host }}{{ with .Values.port }}:{{ . }}{{ end }}
 {{- end -}}
 
 {{/* The token issuer. Must match exactly on both the browser and the API. */}}

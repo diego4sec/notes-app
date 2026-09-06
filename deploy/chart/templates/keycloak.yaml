@@ -1,3 +1,21 @@
+{{- if gt (int .Values.keycloak.replicas) 1 }}
+# Headless, and it must publish not-ready addresses: a starting pod has to find
+# its peers before it can become ready.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-keycloak-headless
+  labels: {{- include "notes.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - { name: jgroups, port: 7800 }
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: keycloak
+---
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -65,10 +83,19 @@ spec:
             - { name: KC_HTTP_ENABLED, value: "true" }
             - { name: KC_PROXY_HEADERS, value: xforwarded }
 
-            # Discovery over the database, so clustering needs no pod-listing
-            # RBAC and no multicast, neither of which k8s gives you.
+            {{- if gt (int .Values.keycloak.replicas) 1 }}
+            # Clustered sessions. The kubernetes stack is JGroups DNS_PING, which
+            # discovers peers through the headless Service below. No pod-listing
+            # RBAC and no multicast, neither of which vanilla k8s gives you.
             - { name: KC_CACHE, value: ispn }
-            - { name: KC_CACHE_STACK, value: jdbc-ping }
+            - { name: KC_CACHE_STACK, value: kubernetes }
+            - name: JAVA_OPTS_APPEND
+              value: -Djgroups.dns.query={{ .Release.Name }}-keycloak-headless.{{ .Release.Namespace }}.svc.cluster.local
+            {{- else }}
+            # Single replica: no cluster to join, and an in-memory cache avoids
+            # a JGroups stack that would only ever find itself.
+            - { name: KC_CACHE, value: local }
+            {{- end }}
 
             - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: {{ .Values.keycloak.adminUsername | quote }} }
             - name: KC_BOOTSTRAP_ADMIN_PASSWORD
@@ -81,13 +108,26 @@ spec:
             # Health and metrics live on the management port, and are not
             # behind KC_HTTP_RELATIVE_PATH.
             - { name: management, containerPort: 9000 }
+            {{- if gt (int .Values.keycloak.replicas) 1 }}
+            - { name: jgroups, containerPort: 7800 }
+            {{- end }}
+          # Health lives under /auth on the management port: Keycloak's
+          # http-management-relative-path defaults to http-relative-path, which
+          # the image bakes as /auth. Probing /health/* returns 404, and the
+          # liveness probe then kills a Keycloak that started perfectly.
+          #
+          # A startupProbe carries the slow first boot (schema creation on an
+          # empty database), so liveness cannot fire before Keycloak is up.
+          startupProbe:
+            httpGet: { path: /auth/health/started, port: management }
+            periodSeconds: 5
+            failureThreshold: 60
           readinessProbe:
-            httpGet: { path: /health/ready, port: management }
-            initialDelaySeconds: 20
+            httpGet: { path: /auth/health/ready, port: management }
             periodSeconds: 10
-            failureThreshold: 30
+            timeoutSeconds: 3
           livenessProbe:
-            httpGet: { path: /health/live, port: management }
-            initialDelaySeconds: 60
+            httpGet: { path: /auth/health/live, port: management }
             periodSeconds: 30
+            timeoutSeconds: 3
           resources: {{- toYaml .Values.keycloak.resources | nindent 12 }}

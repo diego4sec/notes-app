@@ -12,6 +12,15 @@
 
 host: notes.localhost
 
+# Empty means the ingress is reachable on port 80. If something else already
+# holds port 80 on this machine (another LoadBalancer Service will do it), the
+# ingress Service stays <pending> and nothing answers. Then reach it through a
+# port-forward and set the port here so the issuer matches:
+#
+#   kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8081:80
+#   helm upgrade ... --set port=8081
+port: ""
+
 tls:
   enabled: false
 
@@ -25,18 +34,23 @@ secret:
   dbPassword: devpassword
   keycloakAdminPassword: devadmin
 
+# Images come from a throwaway registry on the host, not from the Docker image
+# store. Docker Desktop runs Kubernetes on containerd, which does NOT share the
+# Docker daemon's images, so `pullPolicy: Never` on a locally built image gives
+# ErrImageNeverPull. `make registry` starts the registry and pushes to it.
+#
+# localhost:5001 resolves inside the cluster because Docker Desktop publishes
+# container ports on the same VM the node runs in.
 api:
-  image: notes-api:dev
-  # Images are built straight into the Docker Desktop daemon, so never try to
-  # pull them.
-  pullPolicy: Never
+  image: localhost:5001/notes-api:dev
+  pullPolicy: IfNotPresent
 
 web:
-  image: notes-web:dev
-  pullPolicy: Never
+  image: localhost:5001/notes-web:dev
+  pullPolicy: IfNotPresent
 
 keycloak:
-  image: keycloak-notes:dev
-  pullPolicy: Never
+  image: localhost:5001/keycloak-notes:dev
+  pullPolicy: IfNotPresent
   importRealm: true
   replicas: 1

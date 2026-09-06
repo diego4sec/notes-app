@@ -8,6 +8,7 @@
 #   - two replicas of the stateless tiers, with limits
 
 host: notes.example.com
+port: ""
 
 tls:
   enabled: true
