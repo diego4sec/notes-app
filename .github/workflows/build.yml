@@ -1,0 +1,130 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # The suite needs real Postgres: the schema uses text[] and Postgres
+      # full-text search, neither of which sqlite can stand in for.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: notes
+          POSTGRES_PASSWORD: notes
+          POSTGRES_DB: notes
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U notes"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: pytest
+        working-directory: api
+        env:
+          DATABASE_URL: postgresql+psycopg://notes:notes@localhost:5432/notes
+        run: uv run --extra dev pytest -q
+
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint and render both environments
+        run: |
+          helm lint deploy/chart -f deploy/chart/values-local.yaml
+          helm lint deploy/chart -f deploy/chart/values-cloud.yaml
+          helm template notes deploy/chart -f deploy/chart/values-local.yaml > /tmp/local.yaml
+          helm template notes deploy/chart -f deploy/chart/values-cloud.yaml > /tmp/cloud.yaml
+
+      # The issuer the API validates has to equal the one Keycloak advertises,
+      # byte for byte, port and /auth path included. A mismatch here is a 401 on
+      # every single request, so it is worth failing the build over.
+      - name: Issuer and KC_HOSTNAME agree
+        run: |
+          python3 - <<'PY'
+          import re, sys
+
+          for env in ("local", "cloud"):
+              text = open(f"/tmp/{env}.yaml").read()
+              issuer = re.search(r'name: OIDC_ISSUER, value: "([^"]+)"', text).group(1)
+              hostname = re.search(r'name: KC_HOSTNAME, value: "([^"]+)"', text).group(1)
+              expected = f"{hostname}/realms/notes"
+              if issuer != expected:
+                  sys.exit(f"::error::{env}: OIDC_ISSUER {issuer} != {expected}")
+              if not hostname.endswith("/auth"):
+                  sys.exit(f"::error::{env}: KC_HOSTNAME {hostname} must keep the /auth path")
+              print(f"{env}: {issuer}")
+          PY
+
+      - name: Cloud values keep secrets out of git
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          text = open("deploy/chart/values-cloud.yaml").read()
+          if re.search(r'^\s*create:\s*true', text, re.M):
+              sys.exit("::error::values-cloud.yaml must not create secrets from literals")
+          for field in ("dbPassword", "keycloakAdminPassword"):
+              if re.search(rf'^\s*{field}:\s*\S', text, re.M):
+                  sys.exit(f"::error::values-cloud.yaml carries a literal {field}")
+          print("cloud values reference an external secret")
+          PY
+
+  images:
+    needs: [test, chart]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: notes-api
+            context: api
+          - name: notes-web
+            context: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}
+          # No `latest`: a mutable tag lets a cluster run something other than
+          # what you deployed.
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=sha,prefix=sha-
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          # Pull requests build to prove they still build, and push nothing.
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}

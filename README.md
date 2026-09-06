@@ -31,6 +31,7 @@ most common failure in this setup, and it removes CORS entirely.
 | `make ingress` | Installs ingress-nginx with HTTP on port 90. |
 | `make deploy` | `registry` plus `helm upgrade --install` with `values-local.yaml`. |
 | `make undeploy` | `helm uninstall`. Leaves the namespace and the PVC. |
+| `make deploy-ghcr` | Deploys the CI-published GHCR images instead of local builds. |
 | `make user USER_NAME=x` | Creates an app user in the cluster realm. Prompts for the password. |
 | `make compose-user USER_NAME=x` | Same, in the compose realm. |
 
@@ -111,6 +112,66 @@ silently loops with no error anywhere. The alternative is to run TLS locally.
 
 There are no users in a fresh cluster. Create one in the admin console at
 http://notes.localhost/auth/admin/ or with `kcadm.sh` (see `helm status`).
+
+## Images and CI
+
+Both repos publish to GHCR on every push to `main` and every `v*` tag. No
+registry secrets needed: the workflows authenticate with `GITHUB_TOKEN`.
+
+| Image | Built from |
+|---|---|
+| `ghcr.io/diego4sec/notes-api` | `notes-app/api` |
+| `ghcr.io/diego4sec/notes-web` | `notes-app/web` |
+| `ghcr.io/diego4sec/keycloak-notes` | the `keycloak-notes` repo |
+
+Tags are `main`, `sha-<short>`, and the version on a `v*` tag. There is
+deliberately no `latest`: a moving tag lets a cluster run something other than
+what you deployed.
+
+`values.yaml` defaults to these images at `:main`. `values-local.yaml` overrides
+them with the local registry, so the inner loop needs neither CI nor the
+network. To run the CI-built images on the cluster instead:
+
+    make deploy-ghcr
+
+**GHCR packages are private until you make them public.** If they are private,
+the cluster needs a pull secret:
+
+    kubectl -n notes create secret docker-registry ghcr \
+      --docker-server=ghcr.io --docker-username=<you> \
+      --docker-password=<PAT with read:packages>
+
+    helm upgrade ... --set imagePullSecrets[0].name=ghcr
+
+The alternative is making each package public once, under the repo's Packages
+settings on GitHub, after which no secret is needed.
+
+### What CI checks
+
+Pull requests build both images but push nothing.
+
+`notes-app` runs pytest against a real Postgres service container, then lints
+and renders the chart for both environments. Two of those chart checks exist
+because the mistakes they catch are invisible until runtime:
+
+- `OIDC_ISSUER` must equal `KC_HOSTNAME` + `/realms/notes` exactly, and
+  `KC_HOSTNAME` must keep its `/auth` path. A mismatch is a 401 on every call.
+- `values-cloud.yaml` must not create secrets from literals, so a real password
+  cannot be committed by accident.
+
+`keycloak-notes` validates the realm file, then **starts the image for real**
+against Postgres with `start --optimized` and asserts what the import actually
+produced: the `basic` scope is assigned (or tokens carry no `sub`), `notes-user`
+is in the client's scope (or tokens carry no roles), and `notes-user` is in the
+default-roles composite (or new users get 403).
+
+That last job exists because a realm can be valid JSON, import with no error,
+and still be wrong in each of those three ways. All three happened here.
+
+Note it uses `start --optimized`, not `start-dev`. `start-dev` re-runs
+augmentation and discards baked build options including
+`KC_HTTP_RELATIVE_PATH`, so it would serve the realm at a path production never
+uses and the issuer assertion would be meaningless.
 
 ## Phase 3: cloud
 

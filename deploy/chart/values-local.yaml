@@ -36,13 +36,18 @@ secret:
   dbPassword: devpassword
   keycloakAdminPassword: devadmin
 
-# Images come from a throwaway registry on the host, not from the Docker image
-# store. Docker Desktop runs Kubernetes on containerd, which does NOT share the
-# Docker daemon's images, so `pullPolicy: Never` on a locally built image gives
-# ErrImageNeverPull. `make registry` starts the registry and pushes to it.
+# Local overrides the GHCR defaults in values.yaml with a throwaway registry on
+# the host, so the inner loop does not depend on CI or on the network.
+#
+# The registry is not optional. Docker Desktop runs Kubernetes on containerd,
+# which does NOT share the Docker daemon's image store, so `pullPolicy: Never`
+# on a locally built image gives ErrImageNeverPull. `make registry` handles it.
 #
 # localhost:5001 resolves inside the cluster because Docker Desktop publishes
 # container ports on the same VM the node runs in.
+#
+# To run the CI-built images here instead, drop these three overrides and, if
+# the GHCR packages are private, add a pull secret.
 api:
   image: localhost:5001/notes-api:dev
   pullPolicy: IfNotPresent

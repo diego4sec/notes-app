@@ -28,22 +28,35 @@ tls:
 
 realm: notes
 
+# Images published by each repo's build workflow. `main` follows the branch;
+# pin a `sha-<short>` or a released version for anything you care about, because
+# a moving tag means a cluster can run something other than what you deployed.
+#
+# GHCR packages are private until you make them public. If they are private, the
+# cluster needs a pull secret:
+#
+#   kubectl -n notes create secret docker-registry ghcr \
+#     --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT with read:packages>
+#
+# then list it here.
+imagePullSecrets: []
+
 api:
-  image: notes-api:dev
+  image: ghcr.io/diego4sec/notes-api:main
   pullPolicy: IfNotPresent
   replicas: 1
   resources:
     requests: { cpu: 50m, memory: 192Mi }
 
 web:
-  image: notes-web:dev
+  image: ghcr.io/diego4sec/notes-web:main
   pullPolicy: IfNotPresent
   replicas: 1
   resources:
     requests: { cpu: 10m, memory: 32Mi }
 
 keycloak:
-  image: keycloak-notes:dev
+  image: ghcr.io/diego4sec/keycloak-notes:main
   pullPolicy: IfNotPresent
   replicas: 1
   # --import-realm only applies when the realm does not exist, so leaving this

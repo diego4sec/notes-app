@@ -10,6 +10,10 @@
 host: notes.example.com
 port: ""
 
+# Cloud pulls released tags from GHCR, never a moving branch tag. Add the pull
+# secret name here if the packages are private.
+imagePullSecrets: []
+
 tls:
   enabled: true
   secretName: notes-tls
@@ -35,7 +39,7 @@ secret:
   name: notes-secrets
 
 api:
-  image: ghcr.io/OWNER/notes-api:0.1.0
+  image: ghcr.io/diego4sec/notes-api:0.1.0
   pullPolicy: IfNotPresent
   replicas: 2
   resources:
@@ -43,7 +47,7 @@ api:
     limits: { cpu: 500m, memory: 512Mi }
 
 web:
-  image: ghcr.io/OWNER/notes-web:0.1.0
+  image: ghcr.io/diego4sec/notes-web:0.1.0
   pullPolicy: IfNotPresent
   replicas: 2
   resources:
@@ -51,7 +55,7 @@ web:
     limits: { cpu: 100m, memory: 64Mi }
 
 keycloak:
-  image: ghcr.io/OWNER/keycloak-notes:0.1.0
+  image: ghcr.io/diego4sec/keycloak-notes:0.1.0
   pullPolicy: IfNotPresent
   replicas: 2
   importRealm: false

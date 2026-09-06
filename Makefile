@@ -1,6 +1,8 @@
 # Docker Desktop runs Kubernetes on containerd, which cannot see images in the
 # Docker daemon's store. So images go through a throwaway local registry.
 REGISTRY = localhost:5001
+# Tag used by deploy-ghcr. Pin a sha-<short> for anything you care about.
+TAG ?= main
 IMAGES = notes-api notes-web keycloak-notes
 
 KC_ADMIN_PASSWORD ?= devadmin
@@ -12,7 +14,7 @@ LAST_NAME ?= User
 KCADM = /opt/keycloak/bin/kcadm.sh
 KCCFG = --config /tmp/kcadm.json
 
-.PHONY: compose test verify images registry ingress deploy undeploy user compose-user
+.PHONY: compose test verify images registry ingress deploy deploy-ghcr undeploy user compose-user
 
 compose:            ## phase 1: db + keycloak + api, SPA runs via `cd web && npm run dev`
 	docker compose up -d --build
@@ -47,6 +49,16 @@ registry: images
 deploy: registry
 	helm upgrade --install notes ./deploy/chart \
 		-f deploy/chart/values-local.yaml \
+		--namespace notes --create-namespace --wait --timeout 8m
+
+# Deploy the images CI published, rather than local builds. Add
+# --set imagePullSecrets[0].name=ghcr if the GHCR packages are private.
+deploy-ghcr:
+	helm upgrade --install notes ./deploy/chart \
+		-f deploy/chart/values-local.yaml \
+		--set api.image=ghcr.io/diego4sec/notes-api:$(TAG) \
+		--set web.image=ghcr.io/diego4sec/notes-web:$(TAG) \
+		--set keycloak.image=ghcr.io/diego4sec/keycloak-notes:$(TAG) \
 		--namespace notes --create-namespace --wait --timeout 8m
 
 undeploy:
